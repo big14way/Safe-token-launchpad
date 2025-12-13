@@ -1,0 +1,31 @@
+---
+id: 1
+name: Testnet deployment
+network: testnet
+stacks-node: "https://api.testnet.hiro.so"
+bitcoin-node: "http://blockstack:blockstacksystem@bitcoind.testnet.stacks.co:18332"
+plan:
+  batches:
+    - id: 0
+      transactions:
+        - requirement-publish:
+            contract-id: ST1HTBVD3JG9C05J7HBJTHGR0GGW7KXW28M5JS8QE.sip-010-trait
+            remap-sender: ST1HTBVD3JG9C05J7HBJTHGR0GGW7KXW28M5JS8QE
+            remap-principals: {}
+            cost: 4960
+            path: contracts/sip-010-trait.clar
+            anchor-block-only: true
+        - requirement-publish:
+            contract-id: ST1HTBVD3JG9C05J7HBJTHGR0GGW7KXW28M5JS8QE.sample-token
+            remap-sender: ST1HTBVD3JG9C05J7HBJTHGR0GGW7KXW28M5JS8QE
+            remap-principals: {}
+            cost: 10200
+            path: contracts/sample-token.clar
+            anchor-block-only: true
+        - requirement-publish:
+            contract-id: ST1HTBVD3JG9C05J7HBJTHGR0GGW7KXW28M5JS8QE.safe-launchpad
+            remap-sender: ST1HTBVD3JG9C05J7HBJTHGR0GGW7KXW28M5JS8QE
+            remap-principals: {}
+            cost: 60080
+            path: contracts/safe-launchpad.clar
+            anchor-block-only: true

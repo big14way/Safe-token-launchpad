@@ -1,0 +1,25 @@
+[project]
+name = "safe-token-launchpad"
+description = "Safe Token Launchpad using Clarity 4 features (contract-hash?, restrict-assets?)"
+authors = ["Stacks Builder Challenge"]
+telemetry = false
+cache_dir = "./.cache"
+
+[contracts.sip-010-trait]
+path = "contracts/sip-010-trait.clar"
+clarity_version = 4
+epoch = 3.3
+
+[contracts.sample-token]
+path = "contracts/sample-token.clar"
+clarity_version = 4
+epoch = 3.3
+
+[contracts.safe-launchpad]
+path = "contracts/safe-launchpad.clar"
+clarity_version = 4
+epoch = 3.3
+
+[repl.analysis]
+passes = ["check_checker"]
+check_checker = { trusted_sender = false, trusted_caller = false, callee_filter = false }

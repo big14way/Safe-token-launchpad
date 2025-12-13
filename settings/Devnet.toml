@@ -1,0 +1,3 @@
+[network]
+name = "devnet"
+node_rpc_address = "http://localhost:20443"
