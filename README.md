@@ -71,16 +71,40 @@ A rug-pull resistant token launchpad using Clarity 4's contract verification fea
 - `get-contribution` - Get user's contribution
 - `get-protocol-stats` - Protocol-wide statistics
 
-## Deployment Status
+## Testnet Deployment
 
-✅ **Ready for Testnet Deployment**
+Contracts are configured for Clarity 4 (epoch 3.3) and validated locally.
 
-**Deployer Address:** `ST1HTBVD3JG9C05J7HBJTHGR0GGW7KXW28M5JS8QE`
+**Deployer Address:** `ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM`
 
-**Deployed Contracts:**
-- `ST1HTBVD3JG9C05J7HBJTHGR0GGW7KXW28M5JS8QE.sip-010-trait`
-- `ST1HTBVD3JG9C05J7HBJTHGR0GGW7KXW28M5JS8QE.sample-token`
-- `ST1HTBVD3JG9C05J7HBJTHGR0GGW7KXW28M5JS8QE.safe-launchpad`
+| Contract | Clarity Version | Local Validation | Testnet Status |
+|----------|----------------|------------------|----------------|
+| sip-010-trait-v4 | 4 | ✅ Passed | ✅ Deployed |
+| sample-token | 4 | ✅ Passed | ✅ Deployed |
+| safe-launchpad | 4 | ✅ Passed | ⚠️ Deployment Issue |
+
+**Deployment Details:**
+- Network: Stacks Testnet
+- Clarity Version: 4
+- Epoch: 3.3
+- Trait System: Uses local `.sip-010-trait-v4` reference (renamed to avoid conflict with existing Clarity 3 trait)
+
+**Contract Validation:**
+All contracts individually pass `clarinet check` with Clarity 4 syntax validation.
+
+**Current Status:**
+- `sip-010-trait-v4`: ✅ Successfully deployed (renamed from `sip-010-trait` to avoid conflict)
+- `sample-token`: ✅ Successfully deployed and implements sip-010-trait-v4
+- `test-clarity4`: ✅ Successfully deployed (test contract verifying Clarity 4 features work)
+- `safe-launchpad`: ⚠️ Deployment failing with `(err none)` - investigating complex contract logic
+
+**Clarity 4 Feature Verification:**
+A test contract (`test-clarity4`) was successfully deployed to verify that Clarity 4 features (`contract-hash?`, `stacks-block-time`) work correctly on testnet epoch 3.3. This confirms the testnet supports Clarity 4, and the `safe-launchpad` deployment issue is specific to the contract's complexity rather than a platform limitation.
+
+**Explorer Links:**
+- [sip-010-trait-v4](https://explorer.hiro.so/txid/ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.sip-010-trait-v4?chain=testnet)
+- [sample-token](https://explorer.hiro.so/txid/ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.sample-token?chain=testnet)
+- [test-clarity4](https://explorer.hiro.so/txid/ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.test-clarity4?chain=testnet)
 
 
 ## Getting Started

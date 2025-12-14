@@ -1,7 +1,7 @@
 ;; Sample SIP-010 Token for Testing
 ;; This is a standard token template that would be hash-approved
 
-(impl-trait .sip-010-trait.sip-010-trait)
+(impl-trait .sip-010-trait-v4.sip-010-trait)
 
 ;; Constants
 (define-constant CONTRACT_OWNER tx-sender)
@@ -43,7 +43,7 @@
       
       ;; Print memo if provided
       (match memo
-        memo-data (print memo-data)
+        memo-data (begin (print memo-data) true)
         true
       )
       

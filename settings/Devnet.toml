@@ -1,3 +1,17 @@
 [network]
 name = "devnet"
-node_rpc_address = "http://localhost:20443"
+
+[devnet]
+epoch_2_0 = 100
+epoch_2_05 = 102
+epoch_2_1 = 103
+epoch_2_2 = 104
+epoch_2_3 = 105
+epoch_2_4 = 106
+epoch_2_5 = 108
+epoch_3_0 = 109
+epoch_3_3 = 148
+
+[accounts.deployer]
+mnemonic = "twice kind fence tip hidden tilt action fragile skin nothing glory cousin green tomorrow spring wrist shed math olympic multiply hip blue scout claw"
+balance = 100_000_000_000_000

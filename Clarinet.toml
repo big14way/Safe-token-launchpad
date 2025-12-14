@@ -5,7 +5,7 @@ authors = ["Stacks Builder Challenge"]
 telemetry = false
 cache_dir = "./.cache"
 
-[contracts.sip-010-trait]
+[contracts.sip-010-trait-v4]
 path = "contracts/sip-010-trait.clar"
 clarity_version = 4
 epoch = 3.3
@@ -14,11 +14,13 @@ epoch = 3.3
 path = "contracts/sample-token.clar"
 clarity_version = 4
 epoch = 3.3
+depends_on = ["sip-010-trait-v4"]
 
 [contracts.safe-launchpad]
 path = "contracts/safe-launchpad.clar"
 clarity_version = 4
 epoch = 3.3
+depends_on = ["sip-010-trait-v4"]
 
 [repl.analysis]
 passes = ["check_checker"]
