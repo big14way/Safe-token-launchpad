@@ -240,6 +240,67 @@ The project includes 12 comprehensive tests covering:
 
 Tests verify Clarity 4 features including `contract-hash?` verification.
 
+## Hiro Chainhooks Integration
+
+This project includes a **Hiro Chainhooks** implementation for real-time monitoring of token launches, swaps, and fee collection.
+
+### Features
+
+✅ **Real-time Event Tracking**: Monitor token listings, swaps, launches, and claims
+✅ **User Analytics**: Track unique users and trading activity
+✅ **Fee Monitoring**: Track listing fees (10 STX), swap fees (0.3%), and protocol fees (0.1%)
+✅ **Launch Metrics**: Monitor fair launch contributions, finalizations, and success rates
+✅ **Trading Volume**: Track STX and token volumes across all DEX pools
+
+### Tracked Events
+
+| Event | Contract Function | Data Collected |
+|-------|------------------|----------------|
+| Token Listed | `list-token` | Lister, token, liquidity, verified status |
+| Tokens Bought | `buy-tokens` | Buyer, STX in, tokens out, fees |
+| Tokens Sold | `sell-tokens` | Seller, tokens in, STX out, fees |
+| Launch Created | `create-launch` | Creator, tokens for sale, raise targets |
+| Launch Contribution | `contribute-to-launch` | Contributor, amount, total raised |
+| Launch Finalized | `finalize-launch` | Success status, total raised |
+| Tokens Claimed | `claim-from-launch` | Claimer, tokens/refund amount |
+
+### Analytics Output
+
+```json
+{
+  "uniqueUsers": 127,
+  "totalListings": 45,
+  "totalSwaps": 892,
+  "totalLaunches": 23,
+  "listingFeesCollected": 450000000,
+  "swapFeesCollected": 125000000,
+  "protocolFeesCollected": 41666666,
+  "totalTradingVolume": 5000000000,
+  "successfulLaunches": 18,
+  "timestamp": "2025-01-15T10:30:00.000Z"
+}
+```
+
+### Quick Start
+
+```bash
+cd chainhooks
+npm install
+cp .env.example .env
+# Edit .env with your configuration
+npm start
+```
+
+For detailed setup and configuration, see [chainhooks/README.md](./chainhooks/README.md).
+
+### Use Cases
+
+- **Launchpad Analytics**: Monitor platform usage and token launch success rates
+- **Fee Revenue Tracking**: Real-time tracking of all protocol fees
+- **Trading Metrics**: Analyze DEX activity and liquidity pools
+- **User Engagement**: Track active traders and launch participants
+- **Risk Monitoring**: Alert on suspicious activity or large trades
+
 ## Repository
 
 **GitHub:** https://github.com/big14way/Safe-token-launchpad.git
