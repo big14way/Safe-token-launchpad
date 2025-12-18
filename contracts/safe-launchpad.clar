@@ -35,6 +35,7 @@
 (define-data-var total-launches uint u0)
 (define-data-var protocol-fees-collected uint u0)
 (define-data-var paused bool false)
+(define-data-var min-launch-amount uint u100000000)
 
 ;; Approved contract hashes for token templates
 (define-map approved-hashes
