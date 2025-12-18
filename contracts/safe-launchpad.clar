@@ -20,6 +20,7 @@
 (define-constant ERR_MIN_NOT_REACHED (err u110))
 (define-constant ERR_ALREADY_CLAIMED (err u111))
 (define-constant ERR_ASSET_RESTRICTION_FAILED (err u112))
+(define-constant ERR_WHITELIST_REQUIRED (err u113))
 
 ;; Fee constants (in basis points, 100 = 1%)
 (define-constant LISTING_FEE u10000000) ;; 10 STX listing fee
