@@ -37,6 +37,7 @@
 (define-data-var paused bool false)
 (define-data-var min-launch-amount uint u100000000)
 (define-data-var max-launch-cap uint u1000000000000)
+(define-data-var emergency-withdraw-enabled bool false)
 
 ;; Approved contract hashes for token templates
 (define-map approved-hashes
