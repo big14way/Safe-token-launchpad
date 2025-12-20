@@ -21,6 +21,10 @@
 (define-constant ERR_ALREADY_CLAIMED (err u111))
 (define-constant ERR_ASSET_RESTRICTION_FAILED (err u112))
 (define-constant ERR_WHITELIST_REQUIRED (err u113))
+(define-constant ERR_VESTING_NOT_FOUND (err u114))
+(define-constant ERR_VESTING_NOT_STARTED (err u115))
+(define-constant ERR_NO_TOKENS_AVAILABLE (err u116))
+(define-constant ERR_INVALID_VESTING_SCHEDULE (err u117))
 
 ;; Fee constants (in basis points, 100 = 1%)
 (define-constant LISTING_FEE u10000000) ;; 10 STX listing fee
@@ -108,6 +112,42 @@
     enabled: bool,
     total-whitelisted: uint
   }
+)
+
+;; ========================================
+;; Vesting Schedule Data Structures
+;; ========================================
+
+(define-data-var vesting-counter uint u0)
+
+;; Vesting schedules for locked tokens
+(define-map vesting-schedules
+  { vesting-id: uint }
+  {
+    beneficiary: principal,
+    token: principal,
+    total-amount: uint,
+    claimed-amount: uint,
+    start-time: uint,
+    cliff-duration: uint,      ;; Time before any tokens can be claimed
+    vesting-duration: uint,    ;; Total vesting period after cliff
+    created-by: principal,
+    created-at: uint,
+    revocable: bool,
+    revoked: bool
+  }
+)
+
+;; Track all vesting schedules for a beneficiary
+(define-map beneficiary-vestings
+  { beneficiary: principal }
+  (list 20 uint)
+)
+
+;; Track vesting schedules by creator
+(define-map creator-vestings
+  { creator: principal }
+  (list 20 uint)
 )
 
 ;; Read-only functions
@@ -213,6 +253,93 @@
 ;; Check if launch requires whitelist
 (define-read-only (is-whitelist-required (launch-id uint))
   (get enabled (get-whitelist-settings launch-id))
+)
+
+;; ========================================
+;; Vesting Read-Only Functions
+;; ========================================
+
+;; Get vesting schedule details
+(define-read-only (get-vesting-schedule (vesting-id uint))
+  (map-get? vesting-schedules { vesting-id: vesting-id })
+)
+
+;; Calculate vested amount at current time
+(define-read-only (calculate-vested-amount (vesting-id uint))
+  (match (get-vesting-schedule vesting-id)
+    schedule
+      (let
+        (
+          (current-time stacks-block-time)
+          (start (get start-time schedule))
+          (cliff (get cliff-duration schedule))
+          (duration (get vesting-duration schedule))
+          (total (get total-amount schedule))
+        )
+        ;; Check if revoked
+        (if (get revoked schedule)
+          u0
+          ;; Check if before cliff
+          (if (< current-time (+ start cliff))
+            u0
+            ;; Check if fully vested
+            (if (>= current-time (+ start cliff duration))
+              total
+              ;; Calculate proportional vesting
+              (let
+                (
+                  (elapsed (- current-time (+ start cliff)))
+                )
+                (/ (* total elapsed) duration)
+              )
+            )
+          )
+        )
+      )
+    u0
+  )
+)
+
+;; Get claimable amount
+(define-read-only (get-claimable-amount (vesting-id uint))
+  (match (get-vesting-schedule vesting-id)
+    schedule
+      (let
+        (
+          (vested (calculate-vested-amount vesting-id))
+          (claimed (get claimed-amount schedule))
+        )
+        (if (>= vested claimed)
+          (- vested claimed)
+          u0
+        )
+      )
+    u0
+  )
+)
+
+;; Get beneficiary vesting schedules
+(define-read-only (get-beneficiary-vestings (beneficiary principal))
+  (default-to (list) (map-get? beneficiary-vestings { beneficiary: beneficiary }))
+)
+
+;; Get creator vesting schedules
+(define-read-only (get-creator-vestings (creator principal))
+  (default-to (list) (map-get? creator-vestings { creator: creator }))
+)
+
+;; Get comprehensive vesting info
+(define-read-only (get-vesting-info (vesting-id uint))
+  (match (get-vesting-schedule vesting-id)
+    schedule
+      (ok {
+        schedule: schedule,
+        vested-amount: (calculate-vested-amount vesting-id),
+        claimable-amount: (get-claimable-amount vesting-id),
+        remaining-amount: (- (get total-amount schedule) (get claimed-amount schedule))
+      })
+    ERR_VESTING_NOT_FOUND
+  )
 )
 
 ;; Private functions
@@ -746,5 +873,184 @@
     })
 
     (ok true)
+  )
+)
+
+;; ========================================
+;; Vesting Schedule Public Functions
+;; ========================================
+
+;; Create vesting schedule for token lock
+(define-public (create-vesting-schedule
+  (beneficiary principal)
+  (token <ft-trait>)
+  (amount uint)
+  (cliff-duration uint)
+  (vesting-duration uint)
+  (revocable bool))
+  (let
+    (
+      (vesting-id (var-get vesting-counter))
+      (current-time stacks-block-time)
+      (token-principal (contract-of token))
+      (beneficiary-list (get-beneficiary-vestings beneficiary))
+      (creator-list (get-creator-vestings tx-sender))
+    )
+    ;; Validations
+    (asserts! (> amount u0) ERR_ZERO_AMOUNT)
+    (asserts! (> vesting-duration u0) ERR_INVALID_VESTING_SCHEDULE)
+
+    ;; Transfer tokens to contract for vesting
+    (try! (contract-call? token transfer amount tx-sender (as-contract tx-sender) none))
+
+    ;; Create vesting schedule
+    (map-set vesting-schedules
+      { vesting-id: vesting-id }
+      {
+        beneficiary: beneficiary,
+        token: token-principal,
+        total-amount: amount,
+        claimed-amount: u0,
+        start-time: current-time,
+        cliff-duration: cliff-duration,
+        vesting-duration: vesting-duration,
+        created-by: tx-sender,
+        created-at: current-time,
+        revocable: revocable,
+        revoked: false
+      }
+    )
+
+    ;; Track vesting for beneficiary
+    (map-set beneficiary-vestings
+      { beneficiary: beneficiary }
+      (unwrap! (as-max-len? (append beneficiary-list vesting-id) u20) ERR_INVALID_VESTING_SCHEDULE)
+    )
+
+    ;; Track vesting for creator
+    (map-set creator-vestings
+      { creator: tx-sender }
+      (unwrap! (as-max-len? (append creator-list vesting-id) u20) ERR_INVALID_VESTING_SCHEDULE)
+    )
+
+    ;; Increment counter
+    (var-set vesting-counter (+ vesting-id u1))
+
+    ;; Emit Chainhook event
+    (print {
+      event: "vesting-created",
+      vesting-id: vesting-id,
+      beneficiary: beneficiary,
+      token: token-principal,
+      amount: amount,
+      cliff-duration: cliff-duration,
+      vesting-duration: vesting-duration,
+      revocable: revocable,
+      created-by: tx-sender,
+      timestamp: current-time
+    })
+
+    (ok vesting-id)
+  )
+)
+
+;; Claim vested tokens
+(define-public (claim-vested-tokens (vesting-id uint) (token <ft-trait>))
+  (let
+    (
+      (schedule (unwrap! (get-vesting-schedule vesting-id) ERR_VESTING_NOT_FOUND))
+      (claimable (get-claimable-amount vesting-id))
+      (current-time stacks-block-time)
+      (token-principal (contract-of token))
+    )
+    ;; Validations
+    (asserts! (is-eq tx-sender (get beneficiary schedule)) ERR_NOT_AUTHORIZED)
+    (asserts! (is-eq token-principal (get token schedule)) ERR_TOKEN_NOT_VERIFIED)
+    (asserts! (> claimable u0) ERR_NO_TOKENS_AVAILABLE)
+    (asserts! (not (get revoked schedule)) ERR_VESTING_NOT_FOUND)
+
+    ;; Update claimed amount
+    (map-set vesting-schedules
+      { vesting-id: vesting-id }
+      (merge schedule {
+        claimed-amount: (+ (get claimed-amount schedule) claimable)
+      })
+    )
+
+    ;; Transfer tokens to beneficiary
+    (try! (as-contract (contract-call? token transfer claimable tx-sender (get beneficiary schedule) none)))
+
+    ;; Emit Chainhook event
+    (print {
+      event: "tokens-claimed",
+      vesting-id: vesting-id,
+      beneficiary: (get beneficiary schedule),
+      amount-claimed: claimable,
+      total-claimed: (+ (get claimed-amount schedule) claimable),
+      remaining: (- (get total-amount schedule) (+ (get claimed-amount schedule) claimable)),
+      timestamp: current-time
+    })
+
+    (ok claimable)
+  )
+)
+
+;; Revoke vesting schedule (only if revocable)
+(define-public (revoke-vesting (vesting-id uint) (token <ft-trait>))
+  (let
+    (
+      (schedule (unwrap! (get-vesting-schedule vesting-id) ERR_VESTING_NOT_FOUND))
+      (vested (calculate-vested-amount vesting-id))
+      (claimed (get claimed-amount schedule))
+      (claimable (get-claimable-amount vesting-id))
+      (unvested (- (get total-amount schedule) vested))
+      (current-time stacks-block-time)
+      (token-principal (contract-of token))
+    )
+    ;; Validations
+    (asserts! (is-eq tx-sender (get created-by schedule)) ERR_NOT_AUTHORIZED)
+    (asserts! (get revocable schedule) ERR_NOT_AUTHORIZED)
+    (asserts! (not (get revoked schedule)) ERR_VESTING_NOT_FOUND)
+    (asserts! (is-eq token-principal (get token schedule)) ERR_TOKEN_NOT_VERIFIED)
+
+    ;; Mark as revoked
+    (map-set vesting-schedules
+      { vesting-id: vesting-id }
+      (merge schedule { revoked: true })
+    )
+
+    ;; Return unvested tokens to creator
+    (if (> unvested u0)
+      (try! (as-contract (contract-call? token transfer unvested tx-sender (get created-by schedule) none)))
+      true
+    )
+
+    ;; Transfer any claimable tokens to beneficiary
+    (if (> claimable u0)
+      (begin
+        (map-set vesting-schedules
+          { vesting-id: vesting-id }
+          (merge schedule {
+            claimed-amount: (+ claimed claimable),
+            revoked: true
+          })
+        )
+        (try! (as-contract (contract-call? token transfer claimable tx-sender (get beneficiary schedule) none)))
+      )
+      true
+    )
+
+    ;; Emit Chainhook event
+    (print {
+      event: "vesting-revoked",
+      vesting-id: vesting-id,
+      beneficiary: (get beneficiary schedule),
+      unvested-returned: unvested,
+      vested-transferred: claimable,
+      revoked-by: tx-sender,
+      timestamp: current-time
+    })
+
+    (ok { unvested-returned: unvested, vested-transferred: claimable })
   )
 )
