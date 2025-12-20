@@ -85,9 +85,28 @@
 ;; Contributions to launches
 (define-map launch-contributions
   { launch-id: uint, contributor: principal }
-  { 
+  {
     amount: uint,
     claimed: bool
+  }
+)
+
+;; Whitelist for private launches
+(define-map launch-whitelist
+  { launch-id: uint, user: principal }
+  {
+    whitelisted-at: uint,
+    max-contribution: uint,      ;; Individual cap for this user
+    contributed-amount: uint      ;; Track contributions
+  }
+)
+
+;; Whitelist settings per launch
+(define-map whitelist-settings
+  { launch-id: uint }
+  {
+    enabled: bool,
+    total-whitelisted: uint
   }
 )
 
@@ -172,6 +191,28 @@
     hash (ok hash)
     (err ERR_INVALID_HASH)
   )
+)
+
+;; Get whitelist status for a user
+(define-read-only (get-whitelist-status (launch-id uint) (user principal))
+  (map-get? launch-whitelist { launch-id: launch-id, user: user })
+)
+
+;; Check if user is whitelisted
+(define-read-only (is-whitelisted (launch-id uint) (user principal))
+  (is-some (get-whitelist-status launch-id user))
+)
+
+;; Get whitelist settings for launch
+(define-read-only (get-whitelist-settings (launch-id uint))
+  (default-to { enabled: false, total-whitelisted: u0 }
+    (map-get? whitelist-settings { launch-id: launch-id })
+  )
+)
+
+;; Check if launch requires whitelist
+(define-read-only (is-whitelist-required (launch-id uint))
+  (get enabled (get-whitelist-settings launch-id))
 )
 
 ;; Private functions
@@ -406,8 +447,9 @@
   (let (
       (launch (unwrap! (get-launch-pool launch-id) ERR_POOL_NOT_FOUND))
       (current-time stacks-block-time)
-      (existing-contribution (default-to { amount: u0, claimed: false } 
+      (existing-contribution (default-to { amount: u0, claimed: false }
                               (get-contribution launch-id tx-sender)))
+      (whitelist-config (get-whitelist-settings launch-id))
     )
     ;; Validations
     (asserts! (not (var-get paused)) ERR_NOT_AUTHORIZED)
@@ -415,6 +457,24 @@
     (asserts! (<= current-time (get end-time launch)) ERR_LAUNCH_ENDED)
     (asserts! (not (get finalized launch)) ERR_LAUNCH_ENDED)
     (asserts! (> stx-amount u0) ERR_ZERO_AMOUNT)
+
+    ;; Check whitelist if enabled
+    (if (get enabled whitelist-config)
+      (let ((whitelist-entry (unwrap! (get-whitelist-status launch-id tx-sender) ERR_WHITELIST_REQUIRED)))
+        ;; Verify user doesn't exceed their individual cap
+        (asserts! (<= (+ (get contributed-amount whitelist-entry) stx-amount)
+                     (get max-contribution whitelist-entry))
+                 ERR_SLIPPAGE_TOO_HIGH)
+        ;; Update whitelist contribution tracking
+        (map-set launch-whitelist
+          { launch-id: launch-id, user: tx-sender }
+          (merge whitelist-entry {
+            contributed-amount: (+ (get contributed-amount whitelist-entry) stx-amount)
+          })
+        )
+      )
+      true  ;; Whitelist not enabled, allow anyone
+    )
     
     ;; Check max raise not exceeded
     (let ((new-total (+ (get stx-raised launch) stx-amount)))
@@ -526,10 +586,165 @@
   (begin
     (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
     (asserts! (<= amount (var-get protocol-fees-collected)) ERR_INSUFFICIENT_LIQUIDITY)
-    
+
     (var-set protocol-fees-collected (- (var-get protocol-fees-collected) amount))
     (try! (as-contract (stx-transfer? amount tx-sender CONTRACT_OWNER)))
-    
+
     (ok amount)
+  )
+)
+
+;; ========================================
+;; Whitelist Management Functions
+;; ========================================
+
+;; Enable whitelist for a launch (creator only, must be before launch starts)
+(define-public (enable-whitelist (launch-id uint))
+  (let (
+      (launch (unwrap! (get-launch-pool launch-id) ERR_POOL_NOT_FOUND))
+      (current-time stacks-block-time)
+    )
+    ;; Validations
+    (asserts! (is-eq tx-sender (get creator launch)) ERR_NOT_AUTHORIZED)
+    (asserts! (< current-time (get start-time launch)) ERR_LAUNCH_NOT_ACTIVE)
+
+    ;; Initialize whitelist settings
+    (map-set whitelist-settings
+      { launch-id: launch-id }
+      { enabled: true, total-whitelisted: u0 }
+    )
+
+    (print {
+      event: "whitelist-enabled",
+      launch-id: launch-id,
+      creator: tx-sender,
+      timestamp: current-time
+    })
+
+    (ok true)
+  )
+)
+
+;; Add user to whitelist (creator only)
+(define-public (add-to-whitelist (launch-id uint) (user principal) (max-contribution uint))
+  (let (
+      (launch (unwrap! (get-launch-pool launch-id) ERR_POOL_NOT_FOUND))
+      (settings (get-whitelist-settings launch-id))
+      (current-time stacks-block-time)
+    )
+    ;; Validations
+    (asserts! (is-eq tx-sender (get creator launch)) ERR_NOT_AUTHORIZED)
+    (asserts! (get enabled settings) ERR_NOT_AUTHORIZED)
+    (asserts! (< current-time (get start-time launch)) ERR_LAUNCH_NOT_ACTIVE)
+    (asserts! (> max-contribution u0) ERR_ZERO_AMOUNT)
+    (asserts! (is-none (get-whitelist-status launch-id user)) ERR_TOKEN_ALREADY_LISTED)
+
+    ;; Add to whitelist
+    (map-set launch-whitelist
+      { launch-id: launch-id, user: user }
+      {
+        whitelisted-at: current-time,
+        max-contribution: max-contribution,
+        contributed-amount: u0
+      }
+    )
+
+    ;; Update total whitelisted count
+    (map-set whitelist-settings
+      { launch-id: launch-id }
+      (merge settings { total-whitelisted: (+ (get total-whitelisted settings) u1) })
+    )
+
+    (print {
+      event: "user-whitelisted",
+      launch-id: launch-id,
+      user: user,
+      max-contribution: max-contribution,
+      timestamp: current-time
+    })
+
+    (ok true)
+  )
+)
+
+;; Batch add users to whitelist
+(define-public (batch-add-to-whitelist
+    (launch-id uint)
+    (users (list 50 { user: principal, max-contribution: uint })))
+  (let (
+      (launch (unwrap! (get-launch-pool launch-id) ERR_POOL_NOT_FOUND))
+      (settings (get-whitelist-settings launch-id))
+      (current-time stacks-block-time)
+    )
+    ;; Validations
+    (asserts! (is-eq tx-sender (get creator launch)) ERR_NOT_AUTHORIZED)
+    (asserts! (get enabled settings) ERR_NOT_AUTHORIZED)
+    (asserts! (< current-time (get start-time launch)) ERR_LAUNCH_NOT_ACTIVE)
+
+    ;; Process all users
+    (fold process-whitelist-addition users (ok { launch-id: launch-id, count: u0 }))
+  )
+)
+
+;; Helper function to add single user in batch
+(define-private (process-whitelist-addition
+    (user-info { user: principal, max-contribution: uint })
+    (previous-result (response { launch-id: uint, count: uint } uint)))
+  (match previous-result
+    success
+      (let (
+          (launch-id (get launch-id success))
+          (current-time stacks-block-time)
+        )
+        ;; Add to whitelist if not already present
+        (if (is-none (get-whitelist-status launch-id (get user user-info)))
+          (begin
+            (map-set launch-whitelist
+              { launch-id: launch-id, user: (get user user-info) }
+              {
+                whitelisted-at: current-time,
+                max-contribution: (get max-contribution user-info),
+                contributed-amount: u0
+              }
+            )
+            (ok { launch-id: launch-id, count: (+ (get count success) u1) })
+          )
+          (ok success)  ;; Skip if already whitelisted
+        )
+      )
+    error (err error)
+  )
+)
+
+;; Remove user from whitelist (creator only, before launch starts)
+(define-public (remove-from-whitelist (launch-id uint) (user principal))
+  (let (
+      (launch (unwrap! (get-launch-pool launch-id) ERR_POOL_NOT_FOUND))
+      (settings (get-whitelist-settings launch-id))
+      (current-time stacks-block-time)
+    )
+    ;; Validations
+    (asserts! (is-eq tx-sender (get creator launch)) ERR_NOT_AUTHORIZED)
+    (asserts! (get enabled settings) ERR_NOT_AUTHORIZED)
+    (asserts! (< current-time (get start-time launch)) ERR_LAUNCH_NOT_ACTIVE)
+    (asserts! (is-some (get-whitelist-status launch-id user)) ERR_POOL_NOT_FOUND)
+
+    ;; Remove from whitelist
+    (map-delete launch-whitelist { launch-id: launch-id, user: user })
+
+    ;; Update total whitelisted count
+    (map-set whitelist-settings
+      { launch-id: launch-id }
+      (merge settings { total-whitelisted: (- (get total-whitelisted settings) u1) })
+    )
+
+    (print {
+      event: "user-removed-from-whitelist",
+      launch-id: launch-id,
+      user: user,
+      timestamp: current-time
+    })
+
+    (ok true)
   )
 )
