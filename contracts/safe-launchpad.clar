@@ -29,6 +29,12 @@
 (define-constant ERR_LOCKUP_ACTIVE (err u119))
 (define-constant ERR_LOCKUP_EXISTS (err u120))
 (define-constant ERR_INVALID_LOCKUP_DURATION (err u121))
+(define-constant ERR_INSURANCE_NOT_FOUND (err u122))
+(define-constant ERR_INSURANCE_EXISTS (err u123))
+(define-constant ERR_INVALID_INSURANCE (err u124))
+(define-constant ERR_CLAIM_NOT_FOUND (err u125))
+(define-constant ERR_CLAIM_EXISTS (err u126))
+(define-constant ERR_MILESTONE_NOT_MET (err u127))
 
 ;; Fee constants (in basis points, 100 = 1%)
 (define-constant LISTING_FEE u10000000) ;; 10 STX listing fee
@@ -198,6 +204,68 @@
 (define-map token-lockup-list
   { token: principal }
   (list 50 uint)
+)
+
+;; ========================================
+;; Launch Insurance Pool System
+;; ========================================
+
+(define-data-var insurance-counter uint u0)
+(define-data-var insurance-pool-balance uint u0)
+(define-data-var claim-counter uint u0)
+(define-data-var insurance-premium-bps uint u200) ;; 2% insurance premium
+(define-data-var milestone-verification-period uint u604800) ;; 7 days
+
+;; Launch insurance policies
+(define-map launch-insurance
+  { launch-id: uint }
+  {
+    coverage-amount: uint,
+    premium-paid: uint,
+    purchased-at: uint,
+    expires-at: uint,
+    active: bool,
+    milestone-count: uint,
+    milestones-met: uint,
+    creator: principal
+  }
+)
+
+;; Insurance claims
+(define-map insurance-claims
+  { launch-id: uint, claim-id: uint }
+  {
+    claimant: principal,
+    claim-amount: uint,
+    reason: (string-ascii 256),
+    filed-at: uint,
+    processed-at: uint,
+    approved: bool,
+    processed: bool,
+    payout-amount: uint
+  }
+)
+
+;; Milestone tracking for insured launches
+(define-map launch-milestones
+  { launch-id: uint, milestone-id: uint }
+  {
+    description: (string-ascii 256),
+    target-date: uint,
+    met: bool,
+    verified-at: uint,
+    verified-by: principal
+  }
+)
+
+;; Contributor refund eligibility for failed launches
+(define-map contributor-refunds
+  { launch-id: uint, contributor: principal }
+  {
+    eligible-amount: uint,
+    claimed: bool,
+    claimed-at: uint
+  }
 )
 
 ;; Read-only functions
@@ -454,6 +522,54 @@
         is-past-cliff: (>= stacks-block-time (+ (get start-time lockup) (get cliff-duration lockup)))
       })
     ERR_LOCKUP_NOT_FOUND)
+)
+
+;; ========================================
+;; Insurance Read-Only Functions
+;; ========================================
+
+;; Get launch insurance
+(define-read-only (get-launch-insurance (launch-id uint))
+  (map-get? launch-insurance { launch-id: launch-id })
+)
+
+;; Get insurance claim
+(define-read-only (get-insurance-claim (launch-id uint) (claim-id uint))
+  (map-get? insurance-claims { launch-id: launch-id, claim-id: claim-id })
+)
+
+;; Get launch milestone
+(define-read-only (get-launch-milestone (launch-id uint) (milestone-id uint))
+  (map-get? launch-milestones { launch-id: launch-id, milestone-id: milestone-id })
+)
+
+;; Get contributor refund status
+(define-read-only (get-contributor-refund (launch-id uint) (contributor principal))
+  (map-get? contributor-refunds { launch-id: launch-id, contributor: contributor })
+)
+
+;; Calculate insurance premium
+(define-read-only (calculate-insurance-premium (coverage-amount uint))
+  (/ (* coverage-amount (var-get insurance-premium-bps)) u10000)
+)
+
+;; Check if launch has active insurance
+(define-read-only (has-active-insurance (launch-id uint))
+  (match (get-launch-insurance launch-id)
+    insurance (and
+      (get active insurance)
+      (>= (get expires-at insurance) stacks-block-time))
+    false)
+)
+
+;; Get insurance pool stats
+(define-read-only (get-insurance-pool-stats)
+  {
+    pool-balance: (var-get insurance-pool-balance),
+    total-policies: (var-get insurance-counter),
+    total-claims: (var-get claim-counter),
+    premium-bps: (var-get insurance-premium-bps)
+  }
 )
 
 ;; Private functions
@@ -1401,3 +1517,316 @@
     lockup-id
   )
 )
+
+;; ========================================
+;; Launch Insurance Public Functions
+;; ========================================
+
+;; Purchase insurance for a launch
+(define-public (purchase-launch-insurance (launch-id uint) (coverage-amount uint) (milestone-count uint))
+  (let
+    (
+      (launch (unwrap! (get-launch-pool launch-id) ERR_POOL_NOT_FOUND))
+      (premium (calculate-insurance-premium coverage-amount))
+      (current-time stacks-block-time)
+      (expiry-time (+ current-time (* u30 u86400))) ;; 30 days
+    )
+    (asserts! (is-eq tx-sender (get creator launch)) ERR_NOT_AUTHORIZED)
+    (asserts! (is-none (get-launch-insurance launch-id)) ERR_INSURANCE_EXISTS)
+    (asserts! (> coverage-amount u0) ERR_INVALID_INSURANCE)
+    (asserts! (> milestone-count u0) ERR_INVALID_INSURANCE)
+    (asserts! (<= milestone-count u10) ERR_INVALID_INSURANCE)
+    
+    ;; Transfer premium to contract
+    (unwrap! (stx-transfer? premium tx-sender (var-get contract-principal)) ERR_INSUFFICIENT_LIQUIDITY)
+    
+    ;; Create insurance policy
+    (map-set launch-insurance
+      { launch-id: launch-id }
+      {
+        coverage-amount: coverage-amount,
+        premium-paid: premium,
+        purchased-at: current-time,
+        expires-at: expiry-time,
+        active: true,
+        milestone-count: milestone-count,
+        milestones-met: u0,
+        creator: tx-sender
+      }
+    )
+    
+    (var-set insurance-pool-balance (+ (var-get insurance-pool-balance) premium))
+    (var-set insurance-counter (+ (var-get insurance-counter) u1))
+    
+    (print {
+      event: "insurance-purchased",
+      launch-id: launch-id,
+      coverage-amount: coverage-amount,
+      premium-paid: premium,
+      milestone-count: milestone-count,
+      expires-at: expiry-time,
+      timestamp: current-time
+    })
+    
+    (ok true)
+  )
+)
+
+;; Add milestone for insured launch
+(define-public (add-launch-milestone (launch-id uint) (milestone-id uint) (description (string-ascii 256)) (target-date uint))
+  (let
+    (
+      (insurance (unwrap! (get-launch-insurance launch-id) ERR_INSURANCE_NOT_FOUND))
+    )
+    (asserts! (is-eq tx-sender (get creator insurance)) ERR_NOT_AUTHORIZED)
+    (asserts! (get active insurance) ERR_INSURANCE_NOT_FOUND)
+    (asserts! (< milestone-id (get milestone-count insurance)) ERR_INVALID_INSURANCE)
+    (asserts! (is-none (get-launch-milestone launch-id milestone-id)) ERR_INSURANCE_EXISTS)
+    (asserts! (> target-date stacks-block-time) ERR_INVALID_INSURANCE)
+    
+    (map-set launch-milestones
+      { launch-id: launch-id, milestone-id: milestone-id }
+      {
+        description: description,
+        target-date: target-date,
+        met: false,
+        verified-at: u0,
+        verified-by: tx-sender
+      }
+    )
+    
+    (print {
+      event: "milestone-added",
+      launch-id: launch-id,
+      milestone-id: milestone-id,
+      description: description,
+      target-date: target-date,
+      timestamp: stacks-block-time
+    })
+    
+    (ok true)
+  )
+)
+
+;; Verify milestone completion (admin only)
+(define-public (verify-milestone (launch-id uint) (milestone-id uint) (met bool))
+  (let
+    (
+      (insurance (unwrap! (get-launch-insurance launch-id) ERR_INSURANCE_NOT_FOUND))
+      (milestone (unwrap! (get-launch-milestone launch-id milestone-id) ERR_CLAIM_NOT_FOUND))
+    )
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (asserts! (not (get met milestone)) ERR_INSURANCE_EXISTS)
+    
+    (map-set launch-milestones
+      { launch-id: launch-id, milestone-id: milestone-id }
+      (merge milestone {
+        met: met,
+        verified-at: stacks-block-time,
+        verified-by: tx-sender
+      })
+    )
+    
+    ;; Update insurance milestones met count
+    (if met
+      (map-set launch-insurance
+        { launch-id: launch-id }
+        (merge insurance {
+          milestones-met: (+ (get milestones-met insurance) u1)
+        }))
+      true)
+    
+    (print {
+      event: "milestone-verified",
+      launch-id: launch-id,
+      milestone-id: milestone-id,
+      met: met,
+      milestones-met: (if met (+ (get milestones-met insurance) u1) (get milestones-met insurance)),
+      timestamp: stacks-block-time
+    })
+    
+    (ok true)
+  )
+)
+
+;; File insurance claim for failed launch
+(define-public (file-insurance-claim (launch-id uint) (claim-amount uint) (reason (string-ascii 256)))
+  (let
+    (
+      (launch (unwrap! (get-launch-pool launch-id) ERR_POOL_NOT_FOUND))
+      (contribution (unwrap! (get-launch-contribution launch-id tx-sender) ERR_POOL_NOT_FOUND))
+      (claim-id (var-get claim-counter))
+    )
+    (asserts! (has-active-insurance launch-id) ERR_INSURANCE_NOT_FOUND)
+    (asserts! (> claim-amount u0) ERR_INVALID_INSURANCE)
+    (asserts! (>= (get amount contribution) claim-amount) ERR_INVALID_INSURANCE)
+    (asserts! (is-none (get-insurance-claim launch-id claim-id)) ERR_CLAIM_EXISTS)
+    
+    (map-set insurance-claims
+      { launch-id: launch-id, claim-id: claim-id }
+      {
+        claimant: tx-sender,
+        claim-amount: claim-amount,
+        reason: reason,
+        filed-at: stacks-block-time,
+        processed-at: u0,
+        approved: false,
+        processed: false,
+        payout-amount: u0
+      }
+    )
+    
+    (var-set claim-counter (+ claim-id u1))
+    
+    (print {
+      event: "insurance-claim-filed",
+      launch-id: launch-id,
+      claim-id: claim-id,
+      claimant: tx-sender,
+      claim-amount: claim-amount,
+      reason: reason,
+      timestamp: stacks-block-time
+    })
+    
+    (ok claim-id)
+  )
+)
+
+;; Process insurance claim (admin only)
+(define-public (process-insurance-claim (launch-id uint) (claim-id uint) (approved bool))
+  (let
+    (
+      (insurance (unwrap! (get-launch-insurance launch-id) ERR_INSURANCE_NOT_FOUND))
+      (claim (unwrap! (get-insurance-claim launch-id claim-id) ERR_CLAIM_NOT_FOUND))
+      (payout (if approved (get claim-amount claim) u0))
+      (pool-balance (var-get insurance-pool-balance))
+    )
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (asserts! (not (get processed claim)) ERR_INSURANCE_EXISTS)
+    (asserts! (>= pool-balance payout) ERR_INSUFFICIENT_LIQUIDITY)
+    
+    (map-set insurance-claims
+      { launch-id: launch-id, claim-id: claim-id }
+      (merge claim {
+        approved: approved,
+        processed: true,
+        processed-at: stacks-block-time,
+        payout-amount: payout
+      })
+    )
+    
+    (if approved
+      (begin
+        ;; Transfer payout to claimant
+        (unwrap! (stx-transfer? payout (var-get contract-principal) (get claimant claim)) ERR_INSUFFICIENT_LIQUIDITY)
+        (var-set insurance-pool-balance (- pool-balance payout)))
+      true)
+    
+    (print {
+      event: "insurance-claim-processed",
+      launch-id: launch-id,
+      claim-id: claim-id,
+      claimant: (get claimant claim),
+      approved: approved,
+      payout-amount: payout,
+      timestamp: stacks-block-time
+    })
+    
+    (ok payout)
+  )
+)
+
+;; Enable contributor refunds for failed launch
+(define-public (enable-contributor-refunds (launch-id uint))
+  (let
+    (
+      (insurance (unwrap! (get-launch-insurance launch-id) ERR_INSURANCE_NOT_FOUND))
+      (launch (unwrap! (get-launch-pool launch-id) ERR_POOL_NOT_FOUND))
+      (milestone-success-rate (/ (* (get milestones-met insurance) u100) (get milestone-count insurance)))
+    )
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (asserts! (get active insurance) ERR_INSURANCE_NOT_FOUND)
+    ;; Require less than 50% milestones met to enable refunds
+    (asserts! (< milestone-success-rate u50) ERR_MILESTONE_NOT_MET)
+    
+    ;; Mark insurance as inactive
+    (map-set launch-insurance
+      { launch-id: launch-id }
+      (merge insurance { active: false })
+    )
+    
+    (print {
+      event: "contributor-refunds-enabled",
+      launch-id: launch-id,
+      milestone-success-rate: milestone-success-rate,
+      timestamp: stacks-block-time
+    })
+    
+    (ok true)
+  )
+)
+
+;; Claim contributor refund for failed launch
+(define-public (claim-contributor-refund (launch-id uint))
+  (let
+    (
+      (contribution (unwrap! (get-launch-contribution launch-id tx-sender) ERR_POOL_NOT_FOUND))
+      (insurance (unwrap! (get-launch-insurance launch-id) ERR_INSURANCE_NOT_FOUND))
+      (refund-amount (get amount contribution))
+    )
+    (asserts! (not (get active insurance)) ERR_INSURANCE_NOT_FOUND)
+    (asserts! (not (get claimed contribution)) ERR_ALREADY_CLAIMED)
+    (asserts! (> refund-amount u0) ERR_ZERO_AMOUNT)
+    
+    ;; Transfer refund to contributor
+    (unwrap! (stx-transfer? refund-amount (var-get contract-principal) tx-sender) ERR_INSUFFICIENT_LIQUIDITY)
+    
+    ;; Mark contribution as claimed
+    (map-set launch-contributions
+      { launch-id: launch-id, contributor: tx-sender }
+      (merge contribution { claimed: true })
+    )
+    
+    ;; Record refund
+    (map-set contributor-refunds
+      { launch-id: launch-id, contributor: tx-sender }
+      {
+        eligible-amount: refund-amount,
+        claimed: true,
+        claimed-at: stacks-block-time
+      }
+    )
+    
+    (print {
+      event: "contributor-refund-claimed",
+      launch-id: launch-id,
+      contributor: tx-sender,
+      refund-amount: refund-amount,
+      timestamp: stacks-block-time
+    })
+    
+    (ok refund-amount)
+  )
+)
+
+;; Admin: Update insurance parameters
+(define-public (set-insurance-params (premium-bps uint) (verification-period uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (asserts! (<= premium-bps u1000) ERR_INVALID_INSURANCE) ;; Max 10%
+    (asserts! (> verification-period u0) ERR_INVALID_INSURANCE)
+    
+    (var-set insurance-premium-bps premium-bps)
+    (var-set milestone-verification-period verification-period)
+    
+    (print {
+      event: "insurance-params-updated",
+      premium-bps: premium-bps,
+      verification-period: verification-period,
+      timestamp: stacks-block-time
+    })
+    
+    (ok true)
+  )
+)
+
