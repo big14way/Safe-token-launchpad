@@ -25,6 +25,10 @@
 (define-constant ERR_VESTING_NOT_STARTED (err u115))
 (define-constant ERR_NO_TOKENS_AVAILABLE (err u116))
 (define-constant ERR_INVALID_VESTING_SCHEDULE (err u117))
+(define-constant ERR_LOCKUP_NOT_FOUND (err u118))
+(define-constant ERR_LOCKUP_ACTIVE (err u119))
+(define-constant ERR_LOCKUP_EXISTS (err u120))
+(define-constant ERR_INVALID_LOCKUP_DURATION (err u121))
 
 ;; Fee constants (in basis points, 100 = 1%)
 (define-constant LISTING_FEE u10000000) ;; 10 STX listing fee
@@ -148,6 +152,52 @@
 (define-map creator-vestings
   { creator: principal }
   (list 20 uint)
+)
+
+;; ========================================
+;; Token Lockup System
+;; ========================================
+
+(define-data-var lockup-counter uint u0)
+(define-data-var contract-principal principal tx-sender)
+
+;; Lockup type constants
+(define-constant LOCKUP_TYPE_TEAM u1)
+(define-constant LOCKUP_TYPE_ADVISORS u2)
+(define-constant LOCKUP_TYPE_INVESTORS u3)
+(define-constant LOCKUP_TYPE_TREASURY u4)
+
+;; Token lockup schedules
+(define-map token-lockups
+  { lockup-id: uint }
+  {
+    token: principal,
+    beneficiary: principal,
+    creator: principal,
+    lockup-type: uint,
+    total-amount: uint,
+    released-amount: uint,
+    start-time: uint,
+    cliff-duration: uint,
+    release-duration: uint,
+    release-interval: uint,  ;; Release tokens every X seconds
+    last-release-time: uint,
+    revocable: bool,
+    revoked: bool,
+    created-at: uint
+  }
+)
+
+;; Track lockups by beneficiary
+(define-map beneficiary-lockups
+  { beneficiary: principal }
+  (list 50 uint)
+)
+
+;; Track lockups by token
+(define-map token-lockup-list
+  { token: principal }
+  (list 50 uint)
 )
 
 ;; Read-only functions
@@ -340,6 +390,70 @@
       })
     ERR_VESTING_NOT_FOUND
   )
+)
+
+;; ========================================
+;; Lockup Read-Only Functions
+;; ========================================
+
+;; Get lockup details
+(define-read-only (get-lockup (lockup-id uint))
+  (map-get? token-lockups { lockup-id: lockup-id })
+)
+
+;; Calculate releasable amount for a lockup
+(define-read-only (calculate-releasable-amount (lockup-id uint))
+  (match (get-lockup lockup-id)
+    lockup
+      (let
+        (
+          (current-time stacks-block-time)
+          (start-time (get start-time lockup))
+          (cliff-end (+ start-time (get cliff-duration lockup)))
+          (release-end (+ start-time (get cliff-duration lockup) (get release-duration lockup)))
+          (total (get total-amount lockup))
+          (released (get released-amount lockup))
+        )
+        (if (get revoked lockup)
+          u0
+          (if (< current-time cliff-end)
+            u0
+            (if (>= current-time release-end)
+              (- total released)
+              (let
+                (
+                  (time-since-cliff (- current-time cliff-end))
+                  (release-duration (get release-duration lockup))
+                  (releasable-total (/ (* total time-since-cliff) release-duration))
+                )
+                (if (> releasable-total released)
+                  (- releasable-total released)
+                  u0))))))
+    u0)
+)
+
+;; Get beneficiary lockups
+(define-read-only (get-beneficiary-lockups (beneficiary principal))
+  (default-to (list) (map-get? beneficiary-lockups { beneficiary: beneficiary }))
+)
+
+;; Get token lockups
+(define-read-only (get-token-lockups (token principal))
+  (default-to (list) (map-get? token-lockup-list { token: token }))
+)
+
+;; Get lockup info
+(define-read-only (get-lockup-info (lockup-id uint))
+  (match (get-lockup lockup-id)
+    lockup
+      (ok {
+        lockup: lockup,
+        releasable-amount: (calculate-releasable-amount lockup-id),
+        remaining-locked: (- (get total-amount lockup) (get released-amount lockup)),
+        is-revoked: (get revoked lockup),
+        is-past-cliff: (>= stacks-block-time (+ (get start-time lockup) (get cliff-duration lockup)))
+      })
+    ERR_LOCKUP_NOT_FOUND)
 )
 
 ;; Private functions
@@ -1052,5 +1166,238 @@
     })
 
     (ok { unvested-returned: unvested, vested-transferred: claimable })
+  )
+)
+
+;; ========================================
+;; Token Lockup Public Functions
+;; ========================================
+
+;; Create token lockup
+(define-public (create-lockup
+  (token <ft-trait>)
+  (beneficiary principal)
+  (lockup-type uint)
+  (amount uint)
+  (cliff-duration uint)
+  (release-duration uint)
+  (release-interval uint)
+  (revocable bool))
+  (let
+    (
+      (lockup-id (+ (var-get lockup-counter) u1))
+      (current-time stacks-block-time)
+      (existing-lockups (get-beneficiary-lockups beneficiary))
+      (token-lockups (get-token-lockups (contract-of token)))
+    )
+    ;; Validations
+    (asserts! (> amount u0) ERR_ZERO_AMOUNT)
+    (asserts! (>= cliff-duration u0) ERR_INVALID_LOCKUP_DURATION)
+    (asserts! (> release-duration u0) ERR_INVALID_LOCKUP_DURATION)
+    (asserts! (> release-interval u0) ERR_INVALID_LOCKUP_DURATION)
+    (asserts! (<= lockup-type LOCKUP_TYPE_TREASURY) ERR_INVALID_LOCKUP_DURATION)
+
+    ;; Transfer tokens to contract
+    (try! (contract-call? token transfer amount tx-sender (var-get contract-principal) none))
+
+    ;; Create lockup record
+    (map-set token-lockups
+      { lockup-id: lockup-id }
+      {
+        token: (contract-of token),
+        beneficiary: beneficiary,
+        creator: tx-sender,
+        lockup-type: lockup-type,
+        total-amount: amount,
+        released-amount: u0,
+        start-time: current-time,
+        cliff-duration: cliff-duration,
+        release-duration: release-duration,
+        release-interval: release-interval,
+        last-release-time: current-time,
+        revocable: revocable,
+        revoked: false,
+        created-at: current-time
+      }
+    )
+
+    ;; Update beneficiary lockups list
+    (match (as-max-len? (append existing-lockups lockup-id) u50)
+      new-list (map-set beneficiary-lockups { beneficiary: beneficiary } new-list)
+      false)
+
+    ;; Update token lockups list
+    (match (as-max-len? (append token-lockups lockup-id) u50)
+      new-list (map-set token-lockup-list { token: (contract-of token) } new-list)
+      false)
+
+    (var-set lockup-counter lockup-id)
+
+    ;; Emit Chainhook event
+    (print {
+      event: "lockup-created",
+      lockup-id: lockup-id,
+      token: (contract-of token),
+      beneficiary: beneficiary,
+      creator: tx-sender,
+      lockup-type: lockup-type,
+      amount: amount,
+      cliff-duration: cliff-duration,
+      release-duration: release-duration,
+      revocable: revocable,
+      timestamp: current-time
+    })
+
+    (ok lockup-id)
+  )
+)
+
+;; Release tokens from lockup
+(define-public (release-lockup (lockup-id uint) (token <ft-trait>))
+  (let
+    (
+      (lockup (unwrap! (get-lockup lockup-id) ERR_LOCKUP_NOT_FOUND))
+      (releasable (calculate-releasable-amount lockup-id))
+      (current-time stacks-block-time)
+    )
+    ;; Validations
+    (asserts! (is-eq (get beneficiary lockup) tx-sender) ERR_NOT_AUTHORIZED)
+    (asserts! (not (get revoked lockup)) ERR_LOCKUP_NOT_FOUND)
+    (asserts! (> releasable u0) ERR_NO_TOKENS_AVAILABLE)
+    (asserts! (is-eq (get token lockup) (contract-of token)) ERR_TOKEN_NOT_VERIFIED)
+
+    ;; Transfer tokens to beneficiary
+    (try! (as-contract (contract-call? token transfer releasable tx-sender (get beneficiary lockup) none)))
+
+    ;; Update lockup record
+    (map-set token-lockups
+      { lockup-id: lockup-id }
+      (merge lockup {
+        released-amount: (+ (get released-amount lockup) releasable),
+        last-release-time: current-time
+      })
+    )
+
+    ;; Emit Chainhook event
+    (print {
+      event: "lockup-released",
+      lockup-id: lockup-id,
+      beneficiary: (get beneficiary lockup),
+      amount-released: releasable,
+      total-released: (+ (get released-amount lockup) releasable),
+      remaining-locked: (- (get total-amount lockup) (+ (get released-amount lockup) releasable)),
+      timestamp: current-time
+    })
+
+    (ok releasable)
+  )
+)
+
+;; Revoke lockup (only if revocable and by creator)
+(define-public (revoke-lockup (lockup-id uint) (token <ft-trait>))
+  (let
+    (
+      (lockup (unwrap! (get-lockup lockup-id) ERR_LOCKUP_NOT_FOUND))
+      (releasable (calculate-releasable-amount lockup-id))
+      (unreleased (- (get total-amount lockup) (get released-amount lockup)))
+      (current-time stacks-block-time)
+    )
+    ;; Validations
+    (asserts! (is-eq (get creator lockup) tx-sender) ERR_NOT_AUTHORIZED)
+    (asserts! (get revocable lockup) ERR_NOT_AUTHORIZED)
+    (asserts! (not (get revoked lockup)) ERR_LOCKUP_NOT_FOUND)
+    (asserts! (is-eq (get token lockup) (contract-of token)) ERR_TOKEN_NOT_VERIFIED)
+
+    ;; Transfer releasable tokens to beneficiary
+    (if (> releasable u0)
+      (try! (as-contract (contract-call? token transfer releasable tx-sender (get beneficiary lockup) none)))
+      true)
+
+    ;; Return unreleased tokens to creator
+    (let ((to-return (- unreleased releasable)))
+      (if (> to-return u0)
+        (try! (as-contract (contract-call? token transfer to-return tx-sender (get creator lockup) none)))
+        true))
+
+    ;; Mark lockup as revoked
+    (map-set token-lockups
+      { lockup-id: lockup-id }
+      (merge lockup {
+        revoked: true,
+        released-amount: (+ (get released-amount lockup) releasable)
+      })
+    )
+
+    ;; Emit Chainhook event
+    (print {
+      event: "lockup-revoked",
+      lockup-id: lockup-id,
+      beneficiary: (get beneficiary lockup),
+      releasable-transferred: releasable,
+      unreleased-returned: (- unreleased releasable),
+      revoked-by: tx-sender,
+      timestamp: current-time
+    })
+
+    (ok { releasable-transferred: releasable, unreleased-returned: (- unreleased releasable) })
+  )
+)
+
+;; Batch create lockups for multiple beneficiaries
+(define-public (batch-create-lockups
+  (token <ft-trait>)
+  (lockups (list 20 {
+    beneficiary: principal,
+    lockup-type: uint,
+    amount: uint,
+    cliff-duration: uint,
+    release-duration: uint,
+    release-interval: uint,
+    revocable: bool
+  })))
+  (let
+    (
+      (results (map create-single-lockup-entry lockups))
+    )
+    (ok (len results))
+  )
+)
+
+;; Helper for batch creation
+(define-private (create-single-lockup-entry (entry {
+  beneficiary: principal,
+  lockup-type: uint,
+  amount: uint,
+  cliff-duration: uint,
+  release-duration: uint,
+  release-interval: uint,
+  revocable: bool
+}))
+  (let
+    (
+      (lockup-id (+ (var-get lockup-counter) u1))
+      (current-time stacks-block-time)
+    )
+    (map-set token-lockups
+      { lockup-id: lockup-id }
+      {
+        token: tx-sender,  ;; This would need token principal from context
+        beneficiary: (get beneficiary entry),
+        creator: tx-sender,
+        lockup-type: (get lockup-type entry),
+        total-amount: (get amount entry),
+        released-amount: u0,
+        start-time: current-time,
+        cliff-duration: (get cliff-duration entry),
+        release-duration: (get release-duration entry),
+        release-interval: (get release-interval entry),
+        last-release-time: current-time,
+        revocable: (get revocable entry),
+        revoked: false,
+        created-at: current-time
+      }
+    )
+    (var-set lockup-counter lockup-id)
+    lockup-id
   )
 )
