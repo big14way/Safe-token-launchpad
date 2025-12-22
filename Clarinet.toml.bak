@@ -22,11 +22,6 @@ clarity_version = 4
 epoch = 3.3
 depends_on = ["sip-010-trait-v4"]
 
-[contracts.token-buyback]
-path = "contracts/token-buyback.clar"
-clarity_version = 4
-epoch = 3.3
-
 [repl.analysis]
 passes = ["check_checker"]
 check_checker = { trusted_sender = false, trusted_caller = false, callee_filter = false }
