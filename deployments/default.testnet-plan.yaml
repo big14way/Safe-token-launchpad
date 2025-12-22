@@ -11,22 +11,29 @@ plan:
         - contract-publish:
             contract-name: sip-010-trait-v4
             expected-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
-            cost: 292461
+            cost: 12091057
             path: contracts/sip-010-trait.clar
             anchor-block-only: true
             clarity-version: 4
         - contract-publish:
             contract-name: safe-launchpad
             expected-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
-            cost: 296633
+            cost: 12680545
             path: contracts/safe-launchpad.clar
             anchor-block-only: true
             clarity-version: 4
         - contract-publish:
             contract-name: sample-token
             expected-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
-            cost: 292884
+            cost: 12108523
             path: contracts/sample-token.clar
+            anchor-block-only: true
+            clarity-version: 4
+        - contract-publish:
+            contract-name: token-buyback
+            expected-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
+            cost: 12104157
+            path: contracts/token-buyback.clar
             anchor-block-only: true
             clarity-version: 4
       epoch: "3.3"
